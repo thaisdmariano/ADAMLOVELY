@@ -2202,7 +2202,7 @@ def submenu_im(memoria: dict, inconsciente: dict) -> None:
 
 
 def generate_block_from_template(memoria: dict, template: str) -> None:
-    lines = template.split('\n')
+    # Parsing mais robusto para textos grandes
     im_id = None
     entrada_texto = ""
     entrada_reacao = ""
@@ -2211,37 +2211,87 @@ def generate_block_from_template(memoria: dict, template: str) -> None:
     saidas_textos = []
     saida_reacao = ""
     saida_contexto = ""
-    current_section = None
+    
+    # Encontrar seções
+    entrada_start = template.find("Entrada:")
+    saida_start = template.find("Saída:")
+    
+    if entrada_start == -1 or saida_start == -1:
+        raise ValueError("Template inválido: seções 'Entrada:' e 'Saída:' são obrigatórias")
+    
+    # Extrair IM ID se presente
+    lines = template[:entrada_start].split('\n')
     for line in lines:
-        line = line.strip()
         if line.startswith("Índice mãe:"):
             im_id = line.split(":", 1)[1].strip()
-        elif line.startswith("Entrada:"):
-            current_section = "entrada"
-            # Capturar o texto logo após "Entrada:"
-            entrada_texto = line.split(":", 1)[1].strip()
-        elif line.startswith("Reação:") and current_section == "entrada":
+            break
+    
+    # Extrair entrada
+    entrada_section = template[entrada_start:saida_start].strip()
+    entrada_lines = entrada_section.split('\n')
+    
+    # Se a primeira linha começa com "Entrada:", capturar o texto
+    if entrada_lines and entrada_lines[0].startswith("Entrada:"):
+        entrada_texto = entrada_lines[0].split(":", 1)[1].strip()
+        entrada_lines = entrada_lines[1:]
+    
+    current_field = None
+    for line in entrada_lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("Reação:"):
             entrada_reacao = line.split(":", 1)[1].strip()
-        elif line.startswith("Contexto:") and current_section == "entrada":
+            current_field = "reacao"
+        elif line.startswith("Contexto:"):
             entrada_contexto = line.split(":", 1)[1].strip()
-        elif line.startswith("Pensamento Interno:") and current_section == "entrada":
+            current_field = "contexto"
+        elif line.startswith("Pensamento Interno:"):
             entrada_pensamento = line.split(":", 1)[1].strip()
-        elif line.startswith("Saída:"):
-            current_section = "saida"
-        elif current_section == "saida":
-            if line.startswith("Reação:"):
-                saida_reacao = line.split(":", 1)[1].strip()
-            elif line.startswith("Contexto:"):
-                saida_contexto = line.split(":", 1)[1].strip()
-            elif line.startswith("1.") or line.startswith("2.") or line.startswith("3.") or line.startswith("4.") or line.startswith("5."):
-                # Capturar textos numerados
-                texto = line.split(".", 1)[1].strip()
-                saidas_textos.append(texto)
-            elif line and not line.startswith("Reação:") and not line.startswith("Contexto:"):
-                # Para textos sem número, mas no template do usuário são numerados
-                pass
+            current_field = "pensamento"
+        elif current_field == "reacao":
+            entrada_reacao += " " + line
+        elif current_field == "contexto":
+            entrada_contexto += " " + line
+        elif current_field == "pensamento":
+            entrada_pensamento += " " + line
+        else:
+            # Assume que é continuação do texto de entrada
+            if entrada_texto:
+                entrada_texto += " " + line
+            else:
+                entrada_texto = line
+    
+    # Extrair saída
+    saida_section = template[saida_start:].strip()
+    saida_lines = saida_section.split('\n')[1:]  # Pular "Saída:"
+    
+    current_field = None
+    for line in saida_lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("Reação:"):
+            saida_reacao = line.split(":", 1)[1].strip()
+            current_field = "reacao"
+        elif line.startswith("Contexto:"):
+            saida_contexto = line.split(":", 1)[1].strip()
+            current_field = "contexto"
+        elif line.startswith("1.") or line.startswith("2.") or line.startswith("3.") or line.startswith("4.") or line.startswith("5."):
+            texto = line.split(".", 1)[1].strip()
+            saidas_textos.append(texto)
+            current_field = "texto"
+        elif current_field == "reacao":
+            saida_reacao += " " + line
+        elif current_field == "contexto":
+            saida_contexto += " " + line
+        elif current_field == "texto":
+            saidas_textos[-1] += " " + line
+    
     if not im_id or not entrada_texto or not saidas_textos:
-        raise ValueError("Template inválido")
+        raise ValueError("Template inválido: IM ID, texto de entrada e textos de saída são obrigatórios")
+    
+    # Resto do código permanece o mesmo
     if im_id not in memoria["IM"]:
         memoria["IM"][im_id] = {"nome": f"IM_{im_id}", "genero": "não binário", "ultimo_child": f"{im_id}.0", "blocos": []}
     universo = memoria["IM"][im_id]
@@ -2560,6 +2610,40 @@ def submenu_backup(memoria: dict, inconsciente: dict) -> None:
     )
     
     st.info("💡 Use esses backups para restaurar dados ou para deploy. Os arquivos são salvos com timestamp após treinamentos automáticos.")
+    
+    # Opções de Restauração e Manutenção
+    st.subheader("🔧 Restauração e Manutenção")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🧹 Limpar Cache Streamlit"):
+            # Limpar caches do Streamlit
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.success("✅ Cache do Streamlit limpo!")
+            st.rerun()
+    
+    with col2:
+        if st.button("🔄 Reiniciar Sessão"):
+            # Limpar session_state e recarregar
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.success("✅ Sessão reiniciada! Recarregando...")
+            st.rerun()
+    
+    with col3:
+        if st.button("💾 Fazer Backup Manual"):
+            # Salvar backups manuais com timestamp
+            import time
+            timestamp = int(time.time())
+            backup_memoria_file = f"Adam_Lovely_memory_manual_backup_{timestamp}.json"
+            backup_inconsciente_file = f"Adam_Lovely_inconscious_manual_backup_{timestamp}.json"
+            salvar_json(backup_memoria_file, memoria)
+            salvar_json(backup_inconsciente_file, inconsciente)
+            st.success(f"✅ Backups manuais salvos: {backup_memoria_file} e {backup_inconsciente_file}")
+    
+    st.warning("⚠️ **Atenção:** 'Reiniciar Sessão' limpa todos os dados não salvos. Faça backup antes!")
 
 
 def main():
