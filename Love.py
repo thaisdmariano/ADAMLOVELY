@@ -36,6 +36,7 @@ except ImportError:
     EDGE_TTS_AVAILABLE = False
 
 import sys
+import time
 
 # ────────────────────────────────────────────────────────────────────────────────
 # CONFIGURAÇÃO DE ARQUIVOS E CONSTANTES
@@ -588,6 +589,11 @@ def train(memoria: dict, dominio: str) -> None:
         status_text.text(f"Época {ep}/{EPOCHS}, Val Loss: {val_loss:.4f}")
 
     st.success(f"✅ Treino concluído. best_val_loss={best:.4f}")
+    
+    # Salvar backup do JSON usado para treinamento
+    backup_memoria = f"Adam_Lovely_memory_backup_{dominio}_{int(time.time())}.json"
+    salvar_json(backup_memoria, memoria)
+    st.info(f"📁 Backup do JSON salvo como: {backup_memoria}")
 
 
 def generate_insight(bloco, chosen=None):
@@ -1673,7 +1679,7 @@ def create_new_im(memoria: dict) -> None:
         st.success(f"✅ IM {im_id} criado: {nome} ({genero})" + (f" - Voz: {voz}" if voz else ""))
 
 
-def submenu_im(memoria: dict) -> None:
+def submenu_im(memoria: dict, inconsciente: dict) -> None:
     st.subheader("🛠️ Gerenciar IMs e Blocos")
     st.write("Áudio disponível. Ouça a voz do personagem escolhido agora")
     st.write(f"gTTS: {GTTS_AVAILABLE}")
@@ -1686,6 +1692,7 @@ def submenu_im(memoria: dict) -> None:
         "🚮 Apagar IM",
         "⚙️ Alimentar vars dos tokens",
         "✏️ Editar nomes de IMs",
+        "💾 Backup JSON",
         "⬅️ Voltar ao menu principal"
     ], key="submenu_im")
 
@@ -2187,6 +2194,9 @@ def submenu_im(memoria: dict) -> None:
                 st.success(f"Nome do IM {im_id} atualizado para '{new_name}'!")
                 st.rerun()
             
+    elif sub_opc == "💾 Backup JSON":
+        submenu_backup(memoria, inconsciente)
+    
     elif sub_opc == "⬅️ Voltar ao menu principal":
         st.session_state.menu = "principal"
 
@@ -2521,8 +2531,44 @@ def submenu_estatisticas(memoria: dict) -> None:
         st.info("Nenhum IM criado ainda.")
 
 
+def submenu_backup(memoria: dict, inconsciente: dict) -> None:
+    st.subheader("💾 Backup dos JSONs")
+    st.write("Aqui você pode visualizar e baixar cópias dos JSONs de memória e inconsciente.")
+    
+    # Backup da Memória
+    st.subheader("📄 JSON de Memória (Adam_Lovely_memory.json)")
+    memoria_json = json.dumps(memoria, ensure_ascii=False, indent=2)
+    st.code(memoria_json, language="json")
+    st.download_button(
+        label="📥 Baixar JSON de Memória",
+        data=memoria_json,
+        file_name="Adam_Lovely_memory.json",
+        mime="application/json",
+        key="download_memoria"
+    )
+    
+    # Backup do Inconsciente
+    st.subheader("🧠 JSON do Inconsciente (Adam_Lovely_inconscious.json)")
+    inconsciente_json = json.dumps(inconsciente, ensure_ascii=False, indent=2)
+    st.code(inconsciente_json, language="json")
+    st.download_button(
+        label="📥 Baixar JSON do Inconsciente",
+        data=inconsciente_json,
+        file_name="Adam_Lovely_inconscious.json",
+        mime="application/json",
+        key="download_inconsciente"
+    )
+    
+    st.info("💡 Use esses backups para restaurar dados ou para deploy. Os arquivos são salvos com timestamp após treinamentos automáticos.")
+
+
 def main():
     st.set_page_config(layout="wide")
+    # Para deploy no Streamlit Cloud ou similar:
+    # 1. Faça upload do código para um repositório Git (GitHub).
+    # 2. Vá para share.streamlit.io, conecte o repo e deploy.
+    # 3. Para persistência, os dados ficam em session_state; arquivos JSON são backups locais.
+    # Nota: Treinamento de IA pode ser lento na nuvem gratuita; considere recursos pagos se necessário.
     # CSS harmonizado: fundo roxo, menu preto com títulos brancos
     st.markdown("""
     <style>
@@ -2607,7 +2653,7 @@ def main():
         if not st.session_state.get("admin", False):
             st.error("❌ Acesso negado. Use 'Modo Administrador' no menu lateral para acessar o Gerenciador de IMs.")
             return
-        submenu_im(memoria)
+        submenu_im(memoria, inconsciente)
     elif st.session_state.menu == "treinar":
         dom = prompt_dominio("treinar", memoria)
         if dom:
