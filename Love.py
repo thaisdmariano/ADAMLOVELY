@@ -832,7 +832,7 @@ def train(memoria: dict, dominio: str) -> None:
     st.success(f"✅ Treino concluído. best_val_loss={best:.4f}")
     
     # Salvar backup do JSON usado para treinamento
-    backup_memoria = f"Adam_Lovely_memory_backup_{dominio}_{int(time.time())}.json"
+    backup_memoria = f"backup/Adam_Lovely_memory_backup_{dominio}_{int(time.time())}.json"
     salvar_json(backup_memoria, memoria)
     st.info(f"📁 Backup do JSON salvo como: {backup_memoria}")
 
@@ -1403,9 +1403,9 @@ def infer(memoria: dict, dominio: str) -> None:
 
         # Parse entrada usando INSEPA: encontrar bloco por reação no final, extrair txt/reac, matching por texto (incluindo vars e multivars) e reação
         s = prompt.strip()
+        # Usar parse_text_reaction para definir reac inicialmente
+        txt, reac = parse_text_reaction(s)
         bloco = None
-        reac = ""
-        txt = ""
         for b in blocos:
             bloco_reac = b["entrada"].get("reacao", "").lower().strip()
             if bloco_reac and s.lower().strip().endswith(bloco_reac):
@@ -1418,26 +1418,84 @@ def infer(memoria: dict, dominio: str) -> None:
                     bloco = b
                     break
 
-        # Se não encontrou match exato, tentar similaridade ALNULU
-        if bloco is None and txt and reac:
-            similares = retrieve_similar_blocks_alnulu(txt, reac, "", "", dominio, top_k=1)  # Contexto e pensamento vazios por enquanto
-            if similares and similares[0][0] >= 0.8:  # Threshold para identidade/similaridade alta
-                bloco = similares[0][1]
-                # Reflexão interna: classificar como conhecimento concreto ou opinião
-                has_contexto = bool(bloco["entrada"].get("contexto"))
-                has_pensamento = bool(bloco["entrada"].get("pensamento_interno"))
-                if has_contexto and has_pensamento:
-                    reflexao = "Isso é um conhecimento concreto: tem texto, reação, contexto e significado."
-                else:
-                    reflexao = "Isso é uma opinião: só tem texto e reação, baseado em similaridade."
-                st.info(f"🔍 Usando bloco similar (similaridade: {similares[0][0]:.2f}). Reflexão: {reflexao}")
-
+        # Mostrar passos como no teste
+        # st.write("### 1. Match Exato")  # Removido para chat limpo
         if bloco:
-            # Generate response for direct match
+            # st.success(f"✅ Match exato encontrado: '{txt} {reac}'")  # Removido
+            pass
+        else:
+            # st.warning(f"❌ Nenhum match exato para '{txt} {reac}'")  # Removido
+            pass
+
+        # Se não encontrou match exato, tentar similaridade ALNULU
+        # st.write("### 2. Similaridade ALNULU")  # Removido para chat limpo
+        if bloco is None and txt and reac:
+            # Dividir input em partes baseadas em reações encontradas, como no teste
+            partes = []
+            remaining = txt
+            while remaining:
+                found = False
+                for b in blocos:
+                    bloco_reac = b["entrada"].get("reacao", "").strip()
+                    if bloco_reac and len(bloco_reac) > 1 and bloco_reac in remaining:
+                        idx = remaining.find(bloco_reac)
+                        if idx > 0:
+                            parte = remaining[:idx + len(bloco_reac)].strip()
+                            partes.append(parte)
+                            remaining = remaining[idx + len(bloco_reac):].strip().lstrip(".,!? ")
+                            found = True
+                            break
+                if not found:
+                    if remaining.strip():
+                        partes.append(remaining.strip())
+                    break
+            if not partes:
+                partes = [txt]
+            # Não adicionar reac global
+            
+            respostas_combinadas = []
+            for parte in partes:
+                # Usar parse_text_reaction para cada parte
+                parte_clean, parte_reac = parse_text_reaction(parte)
+                
+                similares = retrieve_similar_blocks_alnulu(parte_clean, parte_reac, "", "", dominio, top_k=1)
+                if similares:
+                    bloco_sim = similares[0][1]
+                    resposta_texto = bloco_sim['saidas'][0]['textos'][0]
+                    resposta_reacao = bloco_sim['saidas'][0].get('reacao', '')
+                    resposta = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
+                    variations_from_blocks = bloco_sim["saidas"][0]["textos"] + bloco_sim["saidas"][0].get("Multivars_Saída", [])
+                    resposta_variada = variar_texto_rag(bloco_sim, dominio, variations_from_blocks)
+                    if resposta_variada:
+                        resposta = resposta_variada + (" " + resposta_reacao if resposta_reacao else "")
+                    respostas_combinadas.append(resposta)
+            
+            if respostas_combinadas:
+                response = ' '.join(respostas_combinadas)
+                bloco = "combined"
+        elif bloco is None:
+            # st.write("### 2. Similaridade ALNULU")  # Removido
+            # st.info("Reação vazia ou não aplicável, pulando similaridade.")  # Removido
+            pass
+
+        if bloco and bloco != "combined":
+            # Determinar se é match exato ou similar
+            is_exato = any(normalize(t) == normalize(txt) for t in [bloco["entrada"]["texto"]] + bloco["entrada"].get("Multivars_Entrada", []) + [variar_texto(bloco["entrada"]["texto"], bloco, dominio, 'entrada')]) and reac == bloco["entrada"].get("reacao", "")
+            resposta_texto = bloco['saidas'][0]['textos'][0]
+            resposta_reacao = bloco['saidas'][0].get('reacao', '')
+            if is_exato:
+                # Match exato: resposta completa
+                response = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
+            else:
+                # Similar: resposta completa
+                response = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
+            # Aplicar variação se disponível
             variations_from_blocks = bloco["saidas"][0]["textos"] + bloco["saidas"][0].get("Multivars_Saída", [])
-            response = variar_texto_rag(bloco, dominio, variations_from_blocks)
-            bloco_reac = bloco["saidas"][0]["reacao"]
-            response += " " + bloco_reac  # Include the reaction
+            resposta_variada = variar_texto_rag(bloco, dominio, variations_from_blocks)
+            if resposta_variada:
+                response = resposta_variada + (" " + resposta_reacao if resposta_reacao else "")
+            else:
+                response = response
             st.session_state.messages.append({"role": "assistant", "content": response})
             with st.chat_message("assistant"):
                 st.markdown(response)
@@ -1453,7 +1511,15 @@ def infer(memoria: dict, dominio: str) -> None:
             st.session_state.last_valid = True
             st.rerun()
 
-        # Se nenhum bloco encontrado, ativar Cérbero (guardião) para coletar contexto antes de RAG
+        elif bloco == "combined":
+            # Resposta combinada já definida
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            with st.chat_message("assistant"):
+                st.markdown(response)
+            st.session_state.last_response = response
+            st.rerun()
+
+        # Se nenhum bloco encontrado, ativar Cérbero para aprendizado
         if bloco is None:
             if "cerbero_step" not in st.session_state:
                 txt, reac = parse_text_reaction(s)
@@ -3670,14 +3736,14 @@ def submenu_backup(memoria: dict, inconsciente: dict) -> None:
     
     with col3:
         if st.button("💾 Fazer Backup Manual"):
-            # Salvar backups manuais com timestamp
+            # Salvar backups manuais com timestamp na pasta backup
             import time
             timestamp = int(time.time())
-            backup_memoria_file = f"Adam_Lovely_memory_manual_backup_{timestamp}.json"
-            backup_inconsciente_file = f"Adam_Lovely_inconscious_manual_backup_{timestamp}.json"
+            backup_memoria_file = f"backup/Adam_Lovely_memory_manual_backup_{timestamp}.json"
+            backup_inconsciente_file = f"backup/Adam_Lovely_inconscious_manual_backup_{timestamp}.json"
             salvar_json(backup_memoria_file, memoria)
             salvar_json(backup_inconsciente_file, inconsciente)
-            st.success(f"✅ Backups manuais salvos: {backup_memoria_file} e {backup_inconsciente_file}")
+            st.success(f"✅ Backups manuais salvos na pasta backup: {backup_memoria_file} e {backup_inconsciente_file}")
     
     st.warning("⚠️ **Atenção:** 'Reiniciar Sessão' limpa todos os dados não salvos. Faça backup antes!")
 
