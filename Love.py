@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
@@ -1131,12 +1132,13 @@ def retrieve_similar_blocks_alnulu(txt: str, reac: str, contexto: str, thought: 
         bloco_thought_vec = alnulu_encode(bloco["entrada"].get("pensamento_interno", ""))
         
         # Similaridade por campo (pesos ajustados para priorizar emoções: reação 0.5, contexto 0.3, texto 0.1, pensamento 0.1)
-        txt_sim = alnulu_similarity(txt_vec, bloco_txt_vec)
+        txt_sim = similaridade_palavras(txt, bloco["entrada"]["texto"])
         reac_sim = alnulu_similarity(reac_vec, bloco_reac_vec)
         ctx_sim = alnulu_similarity(ctx_vec, bloco_ctx_vec)
         thought_sim = alnulu_similarity(thought_vec, bloco_thought_vec)
         
-        overall_sim = 0.1 * txt_sim + 0.5 * reac_sim + 0.3 * ctx_sim + 0.1 * thought_sim
+        # Similaridade por campo (pesos ajustados: texto 0.4, reação 0.3, contexto 0.2, pensamento 0.1)
+        overall_sim = 0.4 * txt_sim + 0.3 * reac_sim + 0.2 * ctx_sim + 0.1 * thought_sim
         
         # Bônus por concretude: se bloco tem contexto e pensamento, +0.1
         concretude_bonus = 0.1 if bloco["entrada"].get("contexto") and bloco["entrada"].get("pensamento_interno") else 0.0
@@ -1461,7 +1463,7 @@ def infer(memoria: dict, dominio: str) -> None:
                 similares = retrieve_similar_blocks_alnulu(parte_clean, parte_reac, "", "", dominio, top_k=1)
                 if similares:
                     sim_score, bloco_sim = similares[0]
-                    if sim_score < 0.8:
+                    if sim_score < 0.5:
                         # Alucinação detectada: resposta genérica/fraca
                         resposta = "Estou alucinando... Vamos aprender juntos?"
                     else:
@@ -1482,8 +1484,28 @@ def infer(memoria: dict, dominio: str) -> None:
                     bloco = None
         elif bloco is None:
             # st.write("### 2. Similaridade ALNULU")  # Removido
-            # st.info("Reação vazia ou não aplicável, pulando similaridade.")  # Removido
-            pass
+            similares = retrieve_similar_blocks_alnulu(txt, reac, "", "", dominio, top_k=1)
+            if similares:
+                sim_score, bloco_sim = similares[0]
+                if sim_score < 0.5:
+                    # Alucinação detectada: resposta genérica/fraca
+                    response = "Estou alucinando... Vamos aprender juntos?"
+                    bloco = None  # Para ativar Cerbero
+                else:
+                    resposta_texto = bloco_sim['saidas'][0]['textos'][0]
+                    resposta_reacao = bloco_sim['saidas'][0].get('reacao', '')
+                    response = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
+                    variations_from_blocks = bloco_sim["saidas"][0]["textos"] + bloco_sim["saidas"][0].get("Multivars_Saída", [])
+                    response_variada = variar_texto_rag(bloco_sim, dominio, variations_from_blocks)
+                    if response_variada:
+                        response = response_variada + (" " + resposta_reacao if resposta_reacao else "")
+                    # Detectar alucinação interna: se resposta base é "A" ou "O", ativar Cerbero
+                    if resposta_texto.strip() in ["A", "O"]:
+                        bloco = None  # Tratar como não encontrado para aprendizado
+                    else:
+                        bloco = bloco_sim
+            else:
+                bloco = None
 
         if bloco and bloco != "combined":
             # Determinar se é match exato ou similar
@@ -3865,7 +3887,7 @@ def submenu_testar_adam(memoria: dict, inconsciente: dict) -> None:
                 resposta_texto = bloco_sim['saidas'][0]['textos'][0]
                 resposta_reacao = bloco_sim['saidas'][0].get('reacao', '')
                 # Detectar alucinação no teste: se score < 0.8, indica similaridade fraca/genérica
-                if sim_score < 0.8:
+                if sim_score < 0.5:
                     st.error(f"🚨 Alucinação detectada! Score baixo ({sim_score:.2f}) indica resposta genérica/fraca. Ativando aprendizado...")
                     resposta = "Estou alucinando... Vamos aprender juntos?"
                 else:
