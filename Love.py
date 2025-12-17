@@ -3,6 +3,8 @@
 # -*- coding: utf-8 -*-
 
 import os
+import shutil
+import sys
 import json
 import random
 import re as _re
@@ -752,90 +754,100 @@ class AdamSegmentado(nn.Module):
 
 ## INSEPA_TRAIN
 def train(memoria: dict, dominio: str) -> None:
-    # Atualizar inconsciente para o IM selecionado
-    atualizar_inconsciente_para_im(memoria, dominio)
+    try:
+        # Atualizar inconsciente para o IM selecionado
+        atualizar_inconsciente_para_im(memoria, dominio)
 
-    ds = InsepaFieldDataset(memoria, dominio)
-    n = len(ds)
-    ckpt = ckpt_path(dominio)
+        ds = InsepaFieldDataset(memoria, dominio)
+        n = len(ds)
+        ckpt = ckpt_path(dominio)
 
-    idxs = list(range(n))
-    random.shuffle(idxs)
-    vsz = min(max(1, int(0.2 * n)), n - 1)  # garantir pelo menos 1 para treino
-    vidx, tidx = idxs[:vsz], idxs[vsz:]
-    if not tidx:  # se tidx vazio, usar todos para treino, sem val
-        tidx = idxs
-        vidx = []
-    train_ld = DataLoader(Subset(ds, tidx), batch_size=min(BATCH_SIZE, len(tidx)), shuffle=True)
-    val_ld = DataLoader(Subset(ds, vidx), batch_size=min(BATCH_SIZE, len(vidx))) if vidx else None
+        idxs = list(range(n))
+        random.shuffle(idxs)
+        vsz = min(max(1, int(0.2 * n)), n - 1)  # garantir pelo menos 1 para treino
+        vidx, tidx = idxs[:vsz], idxs[vsz:]
+        if not tidx:  # se tidx vazio, usar todos para treino, sem val
+            tidx = idxs
+            vidx = []
+        train_ld = DataLoader(Subset(ds, tidx), batch_size=min(BATCH_SIZE, len(tidx)), shuffle=True)
+        val_ld = DataLoader(Subset(ds, vidx), batch_size=min(BATCH_SIZE, len(vidx))) if vidx else None
 
-    model = AdamSegmentado(
-        nE=len(ds.v_E), nRE=len(ds.v_RE),
-        nCE=len(ds.v_CE), nPIDE=len(ds.v_PIDE),
-        mom_size=ds.mom_size,
-        num_vals_E=len(ds.val_to_idx_E), num_vals_RE=len(ds.val_to_idx_RE),
-        num_vals_CE=len(ds.val_to_idx_CE), num_vals_PIDE=len(ds.val_to_idx_PIDE),
-        out_vocab_size=len(ds.out_vocab), max_out_len=ds.max_out_len,
-        max_E=ds.max_E, max_RE=ds.max_RE, max_CE=ds.max_CE, max_PIDE=ds.max_PIDE, max_ng=ds.max_ng
-    )
-    opt = optim.Adam(model.parameters(), lr=LR)
-    ce = nn.CrossEntropyLoss()
-    mse = nn.MSELoss()
+        model = AdamSegmentado(
+            nE=len(ds.v_E), nRE=len(ds.v_RE),
+            nCE=len(ds.v_CE), nPIDE=len(ds.v_PIDE),
+            mom_size=ds.mom_size,
+            num_vals_E=len(ds.val_to_idx_E), num_vals_RE=len(ds.val_to_idx_RE),
+            num_vals_CE=len(ds.val_to_idx_CE), num_vals_PIDE=len(ds.val_to_idx_PIDE),
+            out_vocab_size=len(ds.out_vocab), max_out_len=ds.max_out_len,
+            max_E=ds.max_E, max_RE=ds.max_RE, max_CE=ds.max_CE, max_PIDE=ds.max_PIDE, max_ng=ds.max_ng
+        )
+        opt = optim.Adam(model.parameters(), lr=LR)
+        ce = nn.CrossEntropyLoss()
+        mse = nn.MSELoss()
 
-    best, wait, prev_val = float("inf"), 0, None
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    for ep in range(1, EPOCHS + 1):
-        model.train()
-        for x, y in train_ld:
-            opt.zero_grad()
-            out = model(x, y)
-            loss = (
-                    mse(out["out"].reshape(-1), y.view(-1)) +
-                    mse(out["recon_pide"], out["pide_raw"])  # Perda não supervisionada para PIDE
-            )
-            loss.backward()
-            opt.step()
+        best, wait, prev_val = float("inf"), 0, None
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        side_bar = st.sidebar.container()
+        side_progress = side_bar.progress(0)
+        side_status = side_bar.empty()
+        for ep in range(1, EPOCHS + 1):
+            model.train()
+            for x, y in train_ld:
+                opt.zero_grad()
+                out = model(x, y)
+                loss = (
+                        mse(out["out"].reshape(-1), y.view(-1)) +
+                        mse(out["recon_pide"], out["pide_raw"])  # Perda não supervisionada para PIDE
+                )
+                loss.backward()
+                opt.step()
 
-        model.eval()
-        val_loss = 0.0
-        if val_ld:
-            with torch.no_grad():
-                for x, y in val_ld:
-                    out = model(x, y)
-                    val_loss += (
-                            mse(out["out"].reshape(-1), y.view(-1)).item() +
-                            mse(out["recon_pide"], out["pide_raw"]).item()  # Perda não supervisionada
-                    )
-            val_loss /= len(val_ld)
-        else:
-            val_loss = float("inf")  # sem validação, usar inf para não salvar
+            model.eval()
+            val_loss = 0.0
+            if val_ld:
+                with torch.no_grad():
+                    for x, y in val_ld:
+                        out = model(x, y)
+                        val_loss += (
+                                mse(out["out"].reshape(-1), y.view(-1)).item() +
+                                mse(out["recon_pide"], out["pide_raw"]).item()  # Perda não supervisionada
+                        )
+                val_loss /= len(val_ld)
+            else:
+                val_loss = float("inf")  # sem validação, usar inf para não salvar
 
-        if prev_val is None or val_loss < best:
-            best, wait = val_loss, 0
-            torch.save((
-                model.state_dict(),
-                ds.max_E, ds.max_RE, ds.max_CE, ds.max_PIDE,
-                ds.mom_size, ds.val_to_idx_E, ds.val_to_idx_RE, ds.val_to_idx_CE, ds.val_to_idx_PIDE,
-                ds.v_E, ds.v_RE, ds.v_CE, ds.v_PIDE,
-                len(ds.out_vocab), ds.max_out_len,
-                ds.max_ng,
-                ds.out_vocab, ds.all_out_markers, ds.idx_to_txt  # Adicionar vS, all_out_markers e idx_to_txt
-            ), ckpt)
-        else:
-            wait += 1
-            if wait >= PATIENCE:
-                break
-        prev_val = val_loss
-        progress_bar.progress(ep / EPOCHS)
-        status_text.text(f"Época {ep}/{EPOCHS}, Val Loss: {val_loss:.4f}")
+            if prev_val is None or val_loss < best:
+                best, wait = val_loss, 0
+                torch.save((
+                    model.state_dict(),
+                    ds.max_E, ds.max_RE, ds.max_CE, ds.max_PIDE,
+                    ds.mom_size, ds.val_to_idx_E, ds.val_to_idx_RE, ds.val_to_idx_CE, ds.val_to_idx_PIDE,
+                    ds.v_E, ds.v_RE, ds.v_CE, ds.v_PIDE,
+                    len(ds.out_vocab), ds.max_out_len,
+                    ds.max_ng,
+                    ds.out_vocab, ds.all_out_markers, ds.idx_to_txt  # Adicionar vS, all_out_markers e idx_to_txt
+                ), ckpt)
+            else:
+                wait += 1
+                if wait >= PATIENCE:
+                    break
+            prev_val = val_loss
+            progress_bar.progress(ep / EPOCHS)
+            side_progress.progress(ep / EPOCHS)
+            status_msg = f"Época {ep}/{EPOCHS}, Val Loss: {val_loss:.4f}"
+            status_text.text(status_msg)
+            side_status.text(status_msg)
 
-    st.success(f"✅ Treino concluído. best_val_loss={best:.4f}")
-    
-    # Salvar backup do JSON usado para treinamento
-    backup_memoria = f"backup/Adam_Lovely_memory_backup_{dominio}_{int(time.time())}.json"
-    salvar_json(backup_memoria, memoria)
-    st.info(f"📁 Backup do JSON salvo como: {backup_memoria}")
+        st.success(f"✅ Treino concluído. best_val_loss={best:.4f}")
+        
+        # Salvar backup do JSON usado para treinamento
+        backup_memoria = f"backup/Adam_Lovely_memory_backup_{dominio}_{int(time.time())}.json"
+        salvar_json(backup_memoria, memoria)
+        st.info(f"📁 Backup do JSON salvo como: {backup_memoria}")
+    except Exception as e:
+        st.error(f"❌ Treino falhou: {e}")
+        st.exception(e)
 
 
 def fine_tune_model(memoria: dict, dominio: str, new_data: List[Tuple[Dict, Dict]]) -> None:
@@ -1434,7 +1446,7 @@ def infer(memoria: dict, dominio: str) -> None:
         if bloco is None and txt and reac:
             # Dividir input em partes baseadas em reações encontradas, como no teste
             partes = []
-            remaining = txt
+            remaining = s  # Usar o input original para incluir reações
             while remaining:
                 found = False
                 for b in blocos:
@@ -1452,7 +1464,7 @@ def infer(memoria: dict, dominio: str) -> None:
                         partes.append(remaining.strip())
                     break
             if not partes:
-                partes = [txt]
+                partes = [s]
             # Não adicionar reac global
             
             respostas_combinadas = []
@@ -1469,11 +1481,17 @@ def infer(memoria: dict, dominio: str) -> None:
                     else:
                         resposta_texto = bloco_sim['saidas'][0]['textos'][0]
                         resposta_reacao = bloco_sim['saidas'][0].get('reacao', '')
-                        resposta = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
-                        variations_from_blocks = bloco_sim["saidas"][0]["textos"] + bloco_sim["saidas"][0].get("Multivars_Saída", [])
-                        resposta_variada = variar_texto_rag(bloco_sim, dominio, variations_from_blocks)
-                        if resposta_variada:
-                            resposta = resposta_variada + (" " + resposta_reacao if resposta_reacao else "")
+                        texto_exato = normalize(parte_clean) == normalize(bloco_sim['entrada']['texto'])
+                        reacao_exata = parte_reac == bloco_sim['entrada'].get('reacao', '')
+                        if reacao_exata:
+                            resposta = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
+                        elif texto_exato:
+                            palavras_resposta = Token(resposta_texto)
+                            metade = max(1, len(palavras_resposta) // 2)
+                            resposta = ' '.join(palavras_resposta[:metade]) + (" " + resposta_reacao if resposta_reacao else "")
+                        else:
+                            primeira_palavra = resposta_texto.split()[0] if resposta_texto.split() else resposta_texto
+                            resposta = primeira_palavra + (" " + resposta_reacao if resposta_reacao else "")
                     respostas_combinadas.append(resposta)
             
             if respostas_combinadas:
@@ -1494,11 +1512,18 @@ def infer(memoria: dict, dominio: str) -> None:
                 else:
                     resposta_texto = bloco_sim['saidas'][0]['textos'][0]
                     resposta_reacao = bloco_sim['saidas'][0].get('reacao', '')
-                    response = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
-                    variations_from_blocks = bloco_sim["saidas"][0]["textos"] + bloco_sim["saidas"][0].get("Multivars_Saída", [])
-                    response_variada = variar_texto_rag(bloco_sim, dominio, variations_from_blocks)
-                    if response_variada:
-                        response = response_variada + (" " + resposta_reacao if resposta_reacao else "")
+                    texto_exato = normalize(txt) == normalize(bloco_sim['entrada']['texto'])
+                    reacao_exata = reac == bloco_sim['entrada'].get('reacao', '')
+                    if reacao_exata:
+                        resposta = resposta_texto + (" " + resposta_reacao if resposta_reacao else "")
+                    elif texto_exato:
+                        palavras_resposta = Token(resposta_texto)
+                        metade = max(1, len(palavras_resposta) // 2)
+                        resposta = ' '.join(palavras_resposta[:metade]) + (" " + resposta_reacao if resposta_reacao else "")
+                    else:
+                        primeira_palavra = resposta_texto.split()[0] if resposta_texto.split() else resposta_texto
+                        resposta = primeira_palavra + (" " + resposta_reacao if resposta_reacao else "")
+                    response = resposta
                     # Detectar alucinação interna: se resposta base é "A" ou "O", ativar Cerbero
                     if resposta_texto.strip() in ["A", "O"]:
                         bloco = None  # Tratar como não encontrado para aprendizado
@@ -2259,36 +2284,38 @@ Contexto: Resposta customizada com multivars
                                     st.warning(f"Idioma '{lang_code}' não suportado pelo gTTS.")
                             else:
                                 # Usar pyttsx3 para outras vozes
-                                import pyttsx3
-                                engine = pyttsx3.init()
-
-                                voices = engine.getProperty('voices')
-                                if voz.startswith('tortoise-'):
-                                    voice_name = voz.split('-', 1)[1]
-                                    if 'emma' in voice_name.lower() or 'female' in voice_name.lower():
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                try:
+                                    import pyttsx3
+                                    engine = pyttsx3.init()
+                                    voices = engine.getProperty('voices')
+                                    if voz.startswith('tortoise-'):
+                                        voice_name = voz.split('-', 1)[1]
+                                        if 'emma' in voice_name.lower() or 'female' in voice_name.lower():
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                        else:
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
                                     else:
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
-                                else:
-                                    selected_voice = next((v for v in voices if v.name == voz), voices[0] if voices else None)
+                                        selected_voice = next((v for v in voices if v.name == voz), voices[0] if voices else None)
 
-                                if not selected_voice and not voz.startswith('tortoise-'):
-                                    if genero == "masculino":
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
-                                    elif genero == "feminino":
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                    if not selected_voice and not voz.startswith('tortoise-'):
+                                        if genero == "masculino":
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
+                                        elif genero == "feminino":
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                        else:
+                                            selected_voice = random.choice(voices) if voices else None
+
+                                    if selected_voice:
+                                        engine.setProperty('voice', selected_voice.id)
+                                        engine.setProperty('rate', 180)
+                                        engine.setProperty('volume', 0.9)
+                                        engine.say(chosen)
+                                        engine.runAndWait()
+                                        st.success(f"🎵 Áudio reproduzido com sucesso! (Voz: {selected_voice.name})")
                                     else:
-                                        selected_voice = random.choice(voices) if voices else None
-
-                                if selected_voice:
-                                    engine.setProperty('voice', selected_voice.id)
-                                    engine.setProperty('rate', 180)
-                                    engine.setProperty('volume', 0.9)
-                                    engine.say(chosen)
-                                    engine.runAndWait()
-                                    st.success(f"🎵 Áudio reproduzido com sucesso! (Voz: {selected_voice.name})")
-                                else:
-                                    st.warning("⚠️ Nenhuma voz do sistema encontrada.")
+                                        st.warning("⚠️ Nenhuma voz do sistema encontrada.")
+                                except RuntimeError:
+                                    st.warning("⚠️ pyttsx3 não disponível neste ambiente. TTS pulado.")
 
                         except Exception as e:
                             import traceback
@@ -2397,36 +2424,38 @@ Contexto: Resposta customizada com multivars
                                     st.warning(f"Idioma '{lang_code}' não suportado pelo gTTS.")
                             else:
                                 # Usar pyttsx3 para outras vozes
-                                import pyttsx3
-                                engine = pyttsx3.init()
-
-                                voices = engine.getProperty('voices')
-                                if voz.startswith('tortoise-'):
-                                    voice_name = voz.split('-', 1)[1]
-                                    if 'emma' in voice_name.lower() or 'female' in voice_name.lower():
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                try:
+                                    import pyttsx3
+                                    engine = pyttsx3.init()
+                                    voices = engine.getProperty('voices')
+                                    if voz.startswith('tortoise-'):
+                                        voice_name = voz.split('-', 1)[1]
+                                        if 'emma' in voice_name.lower() or 'female' in voice_name.lower():
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                        else:
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
                                     else:
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
-                                else:
-                                    selected_voice = next((v for v in voices if v.name == voz), voices[0] if voices else None)
+                                        selected_voice = next((v for v in voices if v.name == voz), voices[0] if voices else None)
 
-                                if not selected_voice and not voz.startswith('tortoise-'):
-                                    if genero == "masculino":
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
-                                    elif genero == "feminino":
-                                        selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                    if not selected_voice and not voz.startswith('tortoise-'):
+                                        if genero == "masculino":
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['david', 'mark', 'male', 'paul', 'george'])), voices[0] if voices else None)
+                                        elif genero == "feminino":
+                                            selected_voice = next((v for v in voices if any(k in v.name.lower() for k in ['maria', 'zira', 'hazel', 'female', 'anna', 'linda'])), voices[0] if voices else None)
+                                        else:
+                                            selected_voice = random.choice(voices) if voices else None
+
+                                    if selected_voice:
+                                        engine.setProperty('voice', selected_voice.id)
+                                        engine.setProperty('rate', 180)
+                                        engine.setProperty('volume', 0.9)
+                                        engine.say(insight_msg)
+                                        engine.runAndWait()
+                                        st.success(f"🎵 Áudio reproduzido com sucesso! (Voz: {selected_voice.name})")
                                     else:
-                                        selected_voice = random.choice(voices) if voices else None
-
-                                if selected_voice:
-                                    engine.setProperty('voice', selected_voice.id)
-                                    engine.setProperty('rate', 180)
-                                    engine.setProperty('volume', 0.9)
-                                    engine.say(insight_msg)
-                                    engine.runAndWait()
-                                    st.success(f"🎵 Áudio reproduzido com sucesso! (Voz: {selected_voice.name})")
-                                else:
-                                    st.warning("⚠️ Nenhuma voz do sistema encontrada.")
+                                        st.warning("⚠️ Nenhuma voz do sistema encontrada.")
+                                except RuntimeError:
+                                    st.warning("⚠️ pyttsx3 não disponível neste ambiente. TTS pulado.")
                         except Exception as e:
                             import traceback
                             st.error(f"Erro ao reproduzir áudio: {str(e)}")
@@ -2787,12 +2816,16 @@ def create_new_im(memoria: dict) -> None:
     genero = st.selectbox("Gênero do IM:", ["masculino", "feminino", "não binário", "outro"], key="new_im_genero")
     voz = None
     if TTS_AVAILABLE:
-        import pyttsx3
-        engine = pyttsx3.init()
-        voices = engine.getProperty('voices')
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            voices = engine.getProperty('voices')
+            voice_options = [v.name for v in voices if v]
+        except RuntimeError:
+            voice_options = []
         gtts_voices = ['gtts-pt-br', 'gtts-pt-pt', 'gtts-en', 'gtts-en-us', 'gtts-en-gb', 'gtts-es', 'gtts-es-us', 'gtts-fr', 'gtts-de', 'gtts-it', 'gtts-ja', 'gtts-ko', 'gtts-ru', 'gtts-ar', 'gtts-hi']
         coqui_voices = ['tts_models/pt/cv/vits', 'tts_models/en/ljspeech/tacotron2-DDC_ph']
-        voice_options = [v.name for v in voices if v] + gtts_voices + [f"coqui-{cv}" for cv in coqui_voices]
+        voice_options += gtts_voices + [f"coqui-{cv}" for cv in coqui_voices]
         voz = st.selectbox("Voz preferida (opcional):", ["Automático"] + voice_options, key="new_im_voz")
         if voz == "Automático":
             voz = None
@@ -4190,6 +4223,12 @@ def main():
     
     st.title("🤖 Adam Lovely AI - Sistema INSEPA")
     st.markdown("### Interface de Chat com IA Avançada")
+    try:
+        import torch
+        torch_ver = torch.__version__
+    except Exception:
+        torch_ver = "não instalado"
+    st.caption(f"Python em uso: {sys.executable} | Python {sys.version.split()[0]} | PyTorch {torch_ver}")
     # Inicializar dados em session_state para persistência na nuvem
     # Sempre recarregar dados do arquivo para garantir sincronização
     st.session_state.memoria = carregar_json(ARQUIVO_MEMORIA, {"IM": {}})
@@ -4202,23 +4241,22 @@ def main():
     # Menu no canto esquerdo
     with st.sidebar:
         st.header("Menu")
-        if st.button("🏗️ Gerenciar IMs"):
-            st.session_state.menu = "gerenciar"
-        if st.button("🧠 Treinar"):
-            st.session_state.menu = "treinar"
-        if st.button("🧪 Testar"):
-            st.session_state.menu = "testar"
-        if st.button("🧪 Testar Adam Afiado"):
-            st.session_state.menu = "testar_adam"
+
+        is_admin = st.session_state.get("admin", False)
+
+        # Acesso público: apenas conversar e estatísticas
         if st.button("💬 Conversar"):
             st.session_state.menu = "conversar"
         if st.button("📊 Estatísticas"):
             st.session_state.menu = "estatisticas"
-        if st.button("🚀 Evoluir IA"):
-            st.session_state.menu = "evoluir"
         if st.button("❌ Sair"):
             st.write("👋 Até mais!")
             st.stop()
+
+        # Acesso administrativo: tudo concentrado em Gerenciar IMs
+        if is_admin:
+            if st.button("🏗️ Gerenciar IMs (admin)"):
+                st.session_state.menu = "gerenciar"
 
         # Modo Administrador
         with st.expander("🔐 Modo Administrador"):
@@ -4230,7 +4268,85 @@ def main():
                 else:
                     st.error("❌ Senha incorreta.")
 
+            if st.session_state.get("admin", False):
+                st.warning("⚠️ Reset limpa toda a sessão (histórico, mensagens, estados)")
+                confirmar_reset = st.checkbox("Confirmo que desejo limpar a sessão", key="confirm_reset")
+                if st.button("🧹 Resetar interface (limpar sessão)"):
+                    if confirmar_reset:
+                        st.session_state.clear()
+                        try:
+                            st.cache_data.clear()
+                        except Exception:
+                            pass
+                        try:
+                            st.cache_resource.clear()
+                        except Exception:
+                            pass
+                        st.rerun()
+                    else:
+                        st.error("Marque a confirmação antes de resetar.")
+
+                with st.expander("🧨 Hard reset (apagar dados e checkpoints)"):
+                    st.error("Apaga memória, inconsciente, checkpoints e backups. Irreversível.")
+                    confirmar_hard = st.checkbox("Confirmo que desejo apagar TODOS os dados", key="confirm_hard_reset")
+                    confirmar_texto = st.text_input("Digite APAGAR para confirmar", key="confirm_hard_reset_text")
+                    if st.button("🔥 Apagar tudo (hard reset)"):
+                        if confirmar_hard and confirmar_texto.strip().upper() == "APAGAR":
+                            erros = []
+                            for alvo in [ARQUIVO_MEMORIA, ARQUIVO_INCONSCIENTE]:
+                                if os.path.exists(alvo):
+                                    try:
+                                        os.remove(alvo)
+                                    except Exception as e:
+                                        erros.append(f"Falha ao remover {alvo}: {e}")
+                            # Remover checkpoints insepa_*.pt
+                            try:
+                                for f in os.listdir('.'):
+                                    if f.startswith('insepa_') and f.endswith('.pt') and os.path.isfile(f):
+                                        try:
+                                            os.remove(f)
+                                        except Exception as e:
+                                            erros.append(f"Falha ao remover {f}: {e}")
+                            except Exception as e:
+                                erros.append(f"Falha ao listar checkpoints: {e}")
+                            # Remover backups
+                            if os.path.exists('backup'):
+                                try:
+                                    shutil.rmtree('backup', ignore_errors=True)
+                                except Exception as e:
+                                    erros.append(f"Falha ao remover backup/: {e}")
+
+                            # Remover config/cache do Streamlit no perfil do usuário
+                            streamlit_home = os.path.join(os.path.expanduser('~'), '.streamlit')
+                            if os.path.exists(streamlit_home):
+                                try:
+                                    shutil.rmtree(streamlit_home, ignore_errors=True)
+                                except Exception as e:
+                                    erros.append(f"Falha ao remover {streamlit_home}: {e}")
+
+                            st.session_state.clear()
+                            try:
+                                st.cache_data.clear()
+                            except Exception:
+                                pass
+                            try:
+                                st.cache_resource.clear()
+                            except Exception:
+                                pass
+
+                            if erros:
+                                st.warning("Hard reset concluído com avisos:\n" + "\n".join(erros))
+                            else:
+                                st.success("Hard reset concluído. Dados, checkpoints e backups removidos.")
+                            st.rerun()
+                        else:
+                            st.error("Marque a confirmação e digite APAGAR para prosseguir.")
+
     if "menu" not in st.session_state:
+        st.session_state.menu = "conversar"
+
+    # Garantir que usuários não-admin fiquem apenas em conversar/estatísticas
+    if not st.session_state.get("admin", False) and st.session_state.menu not in ("conversar", "estatisticas"):
         st.session_state.menu = "conversar"
 
     if st.session_state.menu == "gerenciar":
@@ -4238,20 +4354,23 @@ def main():
             st.error("❌ Acesso negado. Use 'Modo Administrador' no menu lateral para acessar o Gerenciador de IMs.")
             return
         submenu_im(memoria, inconsciente)
-    elif st.session_state.menu == "treinar":
-        dom = prompt_dominio("treinar", memoria)
-        if dom:
-            if dom in memoria["IM"]:
-                train(memoria, dom)
-            else:
-                st.error(f"❌ Domínio '{dom}' não encontrado.")
-    elif st.session_state.menu == "testar":
-        dom = prompt_dominio("testar", memoria)
-        if dom:
-            if dom in memoria["IM"]:
-                test_model(memoria, dom)
-            else:
-                st.error(f"❌ Domínio '{dom}' não encontrado.")
+
+        # Ações avançadas concentradas aqui para admins
+        with st.expander("⚙️ Treino, Testes e Evolução (admin)"):
+            acao = st.selectbox("Escolha a ação:", ["Treinar", "Testar", "Testar Adam Afiado", "Evoluir IA"], key="admin_acao")
+            dom = prompt_dominio(acao.lower(), memoria)
+            if dom and st.button(f"Executar {acao}", key="btn_admin_acao"):
+                if dom not in memoria.get("IM", {}):
+                    st.error(f"❌ Domínio '{dom}' não encontrado.")
+                else:
+                    if acao == "Treinar":
+                        train(memoria, dom)
+                    elif acao == "Testar":
+                        test_model(memoria, dom)
+                    elif acao == "Testar Adam Afiado":
+                        submenu_testar_adam(memoria, inconsciente)
+                    elif acao == "Evoluir IA":
+                        submenu_testar_adam(memoria, inconsciente)
     elif st.session_state.menu == "conversar":
         st.write("Áudio disponível. Ouça a voz do personagem escolhido agora!")
         dom = prompt_dominio("conversar", memoria)
@@ -4262,8 +4381,6 @@ def main():
                 st.error(f"❌ Domínio '{dom}' não encontrado.")
     elif st.session_state.menu == "estatisticas":
         submenu_estatisticas(memoria)
-    elif st.session_state.menu == "testar_adam":
-        submenu_testar_adam(memoria, inconsciente)
 
 
 if __name__ == "__main__":
