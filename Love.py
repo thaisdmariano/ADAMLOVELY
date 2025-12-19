@@ -1,6 +1,5 @@
-
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-.
 
 import os
 import shutil
@@ -57,7 +56,8 @@ UNK = "<UNK>"
 UNK_VAL = -1.0
 N_GRAM = 8  # Tamanho do n-grama (8 para 8-grams)
 
-SENHA_ADMIN = "adam123"  # Senha para acessar Gerenciar IMs e dados completos de teste
+SENHA_ADMIN = "ADAM123"  # Senha para acesso total (Gerenciar IMs + painel completo)
+SENHA_CRIAR_BLOCOS = "TMADAM123"  # Senha para criar blocos via Cérbero (sem acesso ao painel)
 
 
 ## INSEPA_TOKENIZER
@@ -1584,14 +1584,33 @@ def infer(memoria: dict, dominio: str) -> None:
         if bloco is None:
             if "cerbero_step" not in st.session_state:
                 txt, reac = parse_text_reaction(s)
-                st.session_state.cerbero_step = "collect_text_confirmation"
+                st.session_state.cerbero_step = "verify_credentials"
                 st.session_state.new_input = txt
                 st.session_state.new_reac = reac
-                ai_msg = f'🔍 Não tenho conhecimento sobre isso. Pode por favor confirmar? "{txt}" é um texto correto?'
+                ai_msg = f'🔍 Não tenho conhecimento sobre isso. Mas estou sempre disposto a aprender. Por favor confirme suas credenciais:'
                 st.session_state.messages.append({"role": "assistant", "content": ai_msg})
                 with st.chat_message("assistant"):
                     st.markdown(ai_msg)
                 st.rerun()
+            elif st.session_state.cerbero_step == "verify_credentials":
+                credential = prompt.strip()
+                if credential == SENHA_CRIAR_BLOCOS:
+                    st.session_state.cerbero_step = "collect_text_confirmation"
+                    ai_msg = f'Fantástico! Olá TM. Pode por favor confirmar? "{st.session_state.new_input}" é um texto correto?'
+                    st.session_state.messages.append({"role": "assistant", "content": ai_msg})
+                    with st.chat_message("assistant"):
+                        st.markdown(ai_msg)
+                    st.rerun()
+                else:
+                    ai_msg = f'Desculpe. Seu acesso não é permitido por questões de segurança. Sinta-se a vontade para entrar em outros universos, ou aguarde por nossas atualizações. Até mais!'
+                    st.session_state.messages.append({"role": "assistant", "content": ai_msg})
+                    with st.chat_message("assistant"):
+                        st.markdown(ai_msg)
+                    # Reset para recusar o aprendizado
+                    for key in ["cerbero_step", "new_input", "new_reac"]:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    st.rerun()
             elif st.session_state.cerbero_step == "collect_text_confirmation":
                 confirmation = parse_quoted_response(prompt).lower().strip()
                 if confirmation in ["sim", "s", "yes", "y", "correto", "certo", "ok"]:
